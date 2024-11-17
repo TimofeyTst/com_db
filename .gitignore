@@ -1,0 +1,4 @@
+db.db
+logs/*
+Project backups/*
+*.workspace
