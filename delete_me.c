@@ -11,7 +11,7 @@
 #define NUM_SENSORS 4
 #define DELAY_MS 500             // можно менять
 #define MAX_SIRENA_REPEAT_CNT 3  // можно менять
-#define CONTROL_PIN PD3
+#define SECURE_MODE_BTN_PIN PD3
 #define UNDER_SECURE_LED_PIN PB5
 #define MOVE_UNDER_SECURE_WAS_DETECTED_LED_PIN PB6
 #define SIREN_PIN PB7
@@ -32,6 +32,8 @@ void USART_init(void) {
     UCSRB = (1 << RXEN) | (1 << TXEN);
     /* Set frame format: 8data, 1 stop bit */
     UCSRC = (1 << URSEL) | (1 << USBS) | (3 << UCSZ0);
+
+    _delay_ms(DELAY_MS); 
 }
 
 
@@ -50,6 +52,7 @@ void usart_print(const char* str) {
     }
 }
 
+
 void usart_print_secure_flag(uint8_t is_under_secure, const char* str) {
     if (is_under_secure) {
         usart_print("[UNDER SECURE] ");
@@ -57,24 +60,49 @@ void usart_print_secure_flag(uint8_t is_under_secure, const char* str) {
     usart_print(str);
 }
 
-uint8_t sensor_detect_move(uint8_t index) {
-    return PINA & (1 << inputPins[index]);
-}
-
-// Проверка состояния кнопки
-uint8_t button_is_pressed() {
-    return !(PIND & (1 << CONTROL_PIN));  // Кнопка нажата, если значение на пине 0
-}
 
 void init_interrupt_button(void) {
-    DDRD &= ~(1 << CONTROL_PIN);
-    PORTD |= (1 << CONTROL_PIN);
+    DDRD &= ~(1 << SECURE_MODE_BTN_PIN);
+    PORTD |= (1 << SECURE_MODE_BTN_PIN);
 
     GICR |= (1 << INT1);    // разрешить прерывание INT1
     MCUCR |= (1 << ISC10);  // прерывание INT1 при любом изменении состояния пина
 
     sei();  // разрешение прерываний глобально
 }
+
+
+turn_off_under_secure_led(void) {
+    move_was_detected = 0;
+    PORTB &= ~(1 << MOVE_UNDER_SECURE_WAS_DETECTED_LED_PIN);  // Выключаем мигалку
+}
+
+turn_on_under_secure_led(void) {
+    move_was_detected = 1;  // Включаем мигалку
+    PORTB |= (1 << MOVE_UNDER_SECURE_WAS_DETECTED_LED_PIN);  // Включаем мигалку
+}
+
+
+turn_off_siren(void) {
+    sirena_repeat_cnt = MAX_SIRENA_REPEAT_CNT;  // сирену в макс число
+    DDRB &= ~(1 << SIREN_PIN);  // выкл сирены
+    PORTB &= ~(1 << SIREN_PIN); // Выключаем сирену
+}
+
+turn_on_siren(void) {
+    sirena_repeat_cnt = 0;
+    DDRB |= (1 << SIREN_PIN);  // Включаем сирену
+    PORTB |= (1 << SIREN_PIN);  // Включаем сирену
+}
+
+check_siren_need_turn_off(void) {
+    if (sirena_repeat_cnt >= MAX_SIRENA_REPEAT_CNT) {
+        turn_off_siren();
+    } else {
+        ++sirena_repeat_cnt;
+    }
+}
+
 
 void clear_prev_states(void) {
     uint8_t i;
@@ -83,29 +111,33 @@ void clear_prev_states(void) {
     }
 }
 
+uint8_t is_secure_mode_btn_pressed() {
+    return !(PIND & (1 << SECURE_MODE_BTN_PIN));  // Кнопка нажата, если значение на пине 0
+}
+
 ISR(INT1_vect) {
+    // Обработчик прерывания
     usart_print("\r\n[INTERRUPTED]\r\n");
-    // Здесь код обработчика прерывания по изменению состояния кнопки
-    if (button_is_pressed()) {
+    if (is_secure_mode_btn_pressed()) {
         is_under_secure = !is_under_secure;
-        move_was_detected = 0;
-        PORTB &= ~(1 << MOVE_UNDER_SECURE_WAS_DETECTED_LED_PIN);  // Выключаем мигалку
-        DDRB &= ~(1 << SIREN_PIN);
-        PORTB &= ~(1 << SIREN_PIN);  // Выключаем сирену
-        sirena_repeat_cnt = MAX_SIRENA_REPEAT_CNT;  // сирену в макс число
+
+        turn_off_under_secure_led();
+        turn_off_siren();
         clear_prev_states();
+
         if (is_under_secure) {
-            PORTB |= (1 << UNDER_SECURE_LED_PIN);
+            PORTB |= (1 << UNDER_SECURE_LED_PIN); // включаем светодиод
             usart_print("[WARNING]: SECURE MODE ENABLED\r\n");
         } else {
-            PORTB &= ~(1 << UNDER_SECURE_LED_PIN);
+            PORTB &= ~(1 << UNDER_SECURE_LED_PIN); // выключаем светодиод
             usart_print("[WARNING]: SECURE MODE DISABLED\r\n");
         }
+
         _delay_ms(500);  // Антидребезговая задержка
     }
 }
 
-int main(void) {
+init_pins(void) {
     // Инициализация ввода на порту A (датчик движения)
     DDRA = 0x00;  // Настроить все биты порта A как входы (ввод)
     PORTA = 0x00;  // Включить подтягивающие резисторы на порту C
@@ -113,72 +145,77 @@ int main(void) {
     // Инициализация вывода на порту B (светодиоды)
     DDRB = 0xFF;  // Настроить все биты порта B как выходы (вывод)
     PORTB = 0x00;  // Установить начальное состояние порта B (все LED выключены)
+    DDRB |= (1 << MOVE_UNDER_SECURE_WAS_DETECTED_LED_PIN); // включаем выход мигалки
 
-    DDRB |= (1 << MOVE_UNDER_SECURE_WAS_DETECTED_LED_PIN);
-    DDRB &= ~(1 << SIREN_PIN);  // выкл сирены
-
-    init_interrupt_button();
+    turn_off_siren();
     clear_prev_states();
 
+    init_interrupt_button();
     USART_init();
-    _delay_ms(DELAY_MS);
+}
+
+
+turn_on_led_PB(uint8_t i) {
+    PORTB |= (1 << outputPins[i]);
+}
+
+turn_off_led_PB(uint8_t i) {
+    PORTB &= ~(1 << outputPins[i]);
+}
+
+
+uint8_t sensor_detect_move(uint8_t index) {
+    return PINA & (1 << inputPins[index]);
+}
+
+void process_sensor_detects_move(uint8_t sensor_id, char *buffer) {
+    turn_on_led_PB(sensor_id);
+
+    if (prevStates[sensor_id]) {
+        if (is_under_secure) {
+            turn_on_under_secure_led();
+            turn_on_siren();
+            sprintf(buffer, "[ERROR]: Siren! MSensor [%u] detects move >= 2 times!\r\n", sensor_id);
+        } else {
+            sprintf(buffer, "[INFO]: MSensor [%u] detects move >= 2tms, not secure\r\n", sensor_id);
+        }
+    } else {
+        sprintf(buffer, "[INFO]: MSensor [%u] detects move 1 time, check repeat\r\n", sensor_id);
+    }
+}
+
+void process_sensor_empty(uint8_t sensor_id, char *buffer) {
+    turn_off_led_PB(sensor_id);
+
+    if (prevStates[sensor_id]) {
+        sprintf(buffer, "[INFO]: MSensor [%u] not repeat last detected move, skip\r\n", sensor_id);
+    } else {
+        sprintf(buffer, "[INFO]: MSensor [%u] empty\r\n", sensor_id);
+    }
+}
+
+int main(void) {
+    init_pins();
 
     char buffer[50];
     while (1) {
         uint8_t i;
-            for (i = 0; i < NUM_SENSORS; i++) {
-            // Проверка состояния датчика движения
+        for (i = 0; i < NUM_SENSORS; i++) {
             uint8_t is_sensor_detects_move = sensor_detect_move(i);
 
             if (is_sensor_detects_move) {
-                // Если с датчика приходит 1 (обнаружено движение), включаем
-                // соответствующий светодиод
-                PORTB |= (1 << outputPins[i]);
-
-                // Проверка нужно ли включить сирену
-                if (prevStates[i]) {
-                    // Если в прошлый раз движение тоже было
-                    if (is_under_secure) {
-                        sirena_repeat_cnt = 0;
-                        move_was_detected = 1;  // Включаем мигалку
-                        PORTB |= (1 << MOVE_UNDER_SECURE_WAS_DETECTED_LED_PIN);  // Включаем мигалку
-                        DDRB |= (1 << SIREN_PIN);
-                        PORTB |= (1 << SIREN_PIN);  // Включаем сирену
-                        sprintf(buffer, "[ERROR]: Siren! MSensor [%u] detects move >= 2 times!\r\n", i);
-                    } else {
-                        sprintf(buffer, "[INFO]: MSensor [%u] detects move >= 2tms, not secure\r\n", i);
-                    }
-                } else {
-                    sprintf(buffer, "[INFO]: MSensor [%u] detects move 1 time, check repeat\r\n", i);
-                }
+                process_sensor_detects_move(i, buffer); // С датчика приходит 1 (обнаружено движение), включаем
             } else {
-                // Если с датчика приходит 0 (движение не обнаружено), выключаем
-                // светодиод
-                PORTB &= ~(1 << outputPins[i]);
-                if (prevStates[i]) {
-                    sprintf(buffer, "[INFO]: MSensor [%u] not repeat last detected move, skip\r\n", i);
-                } else {
-                    sprintf(buffer, "[INFO]: MSensor [%u] empty\r\n", i);
-                }
+                process_sensor_empty(i, buffer); // С датчика приходит 0 (движение не обнаружено)
             }
 
-            // Запоминаем прошлое состояние
-            prevStates[i] = is_sensor_detects_move;
-
-            // Вывод
+            prevStates[i] = is_sensor_detects_move; // Запоминаем прошлое состояние
             usart_print_secure_flag(is_under_secure, buffer);
         }
 
-        if (sirena_repeat_cnt >= MAX_SIRENA_REPEAT_CNT) {
-            // Выключить сирену
-            DDRB &= ~(1 << SIREN_PIN);
-            PORTB &= ~(1 << SIREN_PIN);
-        } else {
-            ++sirena_repeat_cnt;
-        }
-
-        _delay_ms(DELAY_MS);  // Блокировать короткую задержку для отклика на изменения
+        check_siren_need_turn_off();
+        _delay_ms(DELAY_MS);
     }
 
-    return 0;  // Эта часть кода никогда не выполнится
+    return 0;
 }
